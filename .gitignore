@@ -1,0 +1,39 @@
+# Environment
+.env
+.env.*
+
+# Virtual environments
+.venv*/
+venv*/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Audio / test output files
+*.wav
+*.mp3
+*.ogg
+
+# Log and test output files
+bridge_output*.txt
+bridge_memory_test.txt
+flux_output*.txt
+session_*.txt
+deepgram_inspect.txt
+playback_interruption.txt
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
