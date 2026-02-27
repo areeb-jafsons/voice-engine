@@ -1,6 +1,7 @@
 # Environment
 .env
 .env.*
+!.env.example
 
 # Virtual environments
 .venv*/
@@ -22,18 +23,23 @@ build/
 *.mp3
 *.ogg
 
-# Log and test output files
-bridge_output*.txt
-bridge_memory_test.txt
-flux_output*.txt
-session_*.txt
-deepgram_inspect.txt
-playback_interruption.txt
+# Log files
+*.log
+*.txt
+!requirements.txt
+
+# Legacy directories (locked pycache from prior layout)
+apps/
+
+# Infrastructure runtime logs
+infra/*.log
 
 # IDE
 .vscode/
 .idea/
+.gemini/
 
 # OS
 .DS_Store
 Thumbs.db
+nul

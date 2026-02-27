@@ -1,0 +1,28 @@
+# =============================================================================
+# Abdion Voice Engine — apps/voice_engine/requirements.txt
+# Pinned for February 2026 compatibility
+# Python 3.12 recommended
+# =============================================================================
+
+# ── Core framework ───────────────────────────────────────────────────────────
+# Pipecat with all required service extras
+pipecat-ai[deepgram,elevenlabs,groq,livekit,silero]==0.0.103
+
+# ── Web server ───────────────────────────────────────────────────────────────
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+
+# ── LiveKit Server SDK (JWT token generation in server.py) ───────────────────
+livekit-api==0.8.1
+
+# ── VAD (Silero) ─────────────────────────────────────────────────────────────
+# CPU-only torch keeps the Docker image small and avoids CUDA complexity.
+# Pipecat's SileroVADAnalyzer depends on torch + silero-vad.
+torch==2.6.0
+torchaudio==2.6.0
+silero-vad==6.2.0
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+httpx==0.28.1
+pydantic==2.10.6

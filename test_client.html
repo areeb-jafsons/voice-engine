@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Abdion Voice Engine — Dev Console</title>
+    <style>
+        :root {
+            --bg: #0b0c10;
+            --surface: #13141a;
+            --border: #1f2130;
+            --purple: #7c3aed;
+            --purple2: #4f46e5;
+            --green: #22c55e;
+            --yellow: #f59e0b;
+            --red: #ef4444;
+            --blue: #38bdf8;
+            --muted: #4b5563;
+            --text: #e2e8f0;
+            --text2: #94a3b8;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: grid;
+            grid-template-columns: 340px 1fr;
+            grid-template-rows: auto 1fr;
+            gap: 0;
+            overflow: hidden;
+        }
+
+        /* ── Header ─────────────────────────────────────────────────────── */
+        header {
+            grid-column: 1 / -1;
+            padding: 14px 20px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        header h1 {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--purple);
+        }
+
+        header .tagline {
+            font-size: 0.75rem;
+            color: var(--text2);
+        }
+
+        .ws-badge {
+            margin-left: auto;
+            font-size: 0.72rem;
+            padding: 4px 10px;
+            border-radius: 20px;
+            background: #1a1a2e;
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .ws-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--muted);
+        }
+
+        .ws-dot.on {
+            background: var(--green);
+            animation: blink 2s infinite;
+        }
+
+        .ws-dot.off {
+            background: var(--red);
+        }
+
+        @keyframes blink {
+            50% {
+                opacity: 0.3;
+            }
+        }
+
+        /* ── Left panel ─────────────────────────────────────────────────── */
+        .panel-left {
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .section-title {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text2);
+            margin-bottom: 8px;
+        }
+
+        label {
+            display: block;
+            font-size: 0.75rem;
+            color: var(--text2);
+            margin-bottom: 4px;
+            margin-top: 10px;
+        }
+
+        input {
+            width: 100%;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            padding: 8px 12px;
+            color: var(--text);
+            font-size: 0.88rem;
+            outline: none;
+            transition: border-color .2s;
+        }
+
+        input:focus {
+            border-color: var(--purple);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all .2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        #connectBtn {
+            background: linear-gradient(135deg, var(--purple), var(--purple2));
+            color: #fff;
+            margin-top: 4px;
+        }
+
+        #connectBtn:hover:not(:disabled) {
+            opacity: .85;
+            transform: translateY(-1px);
+        }
+
+        #connectBtn:disabled {
+            opacity: .4;
+            cursor: not-allowed;
+        }
+
+        #disconnectBtn {
+            background: #1e1a2e;
+            color: var(--red);
+            border: 1px solid #4a1d2e;
+            display: none;
+            margin-top: 6px;
+        }
+
+        #disconnectBtn:hover {
+            background: #2d1e2e;
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 0.82rem;
+            margin-top: 6px;
+        }
+
+        .dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .dot.idle {
+            background: var(--muted);
+        }
+
+        .dot.connecting {
+            background: var(--yellow);
+            animation: blink 1s infinite;
+        }
+
+        .dot.live {
+            background: var(--green);
+            animation: blink 1.8s infinite;
+        }
+
+        .dot.error {
+            background: var(--red);
+        }
+
+        .mic-ring {
+            display: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 2px solid var(--green);
+            animation: expand 1.2s infinite;
+        }
+
+        @keyframes expand {
+            100% {
+                transform: scale(2.5);
+                opacity: 0;
+            }
+        }
+
+        /* Active agents panel */
+        #agentList {
+            font-size: 0.78rem;
+            color: var(--text2);
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            padding: 8px 10px;
+            min-height: 36px;
+        }
+
+        .agent-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 3px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .agent-row:last-child {
+            border-bottom: none;
+        }
+
+        .agent-room {
+            color: var(--blue);
+            font-weight: 600;
+        }
+
+        .agent-uptime {
+            color: var(--muted);
+        }
+
+        /* ── Right panel — log console ──────────────────────────────────── */
+        .panel-right {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .log-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 16px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .log-toolbar span {
+            font-size: 0.78rem;
+            color: var(--text2);
+        }
+
+        .filter-btn {
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            background: var(--bg);
+            color: var(--text2);
+            transition: all .15s;
+        }
+
+        .filter-btn.active {
+            border-color: var(--purple);
+            color: var(--purple);
+            background: #1a1230;
+        }
+
+        .clear-btn {
+            margin-left: auto;
+            padding: 3px 10px;
+            border-radius: 6px;
+            font-size: 0.72rem;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            background: var(--bg);
+            color: var(--text2);
+        }
+
+        .clear-btn:hover {
+            color: var(--red);
+            border-color: var(--red);
+        }
+
+        #console {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 0;
+            font-family: 'Cascadia Code', 'Consolas', monospace;
+            font-size: 0.79rem;
+            line-height: 1.55;
+            background: var(--bg);
+        }
+
+        .log-row {
+            padding: 1px 16px;
+            display: flex;
+            gap: 10px;
+            align-items: baseline;
+            border-left: 3px solid transparent;
+            transition: background .1s;
+        }
+
+        .log-row:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .ts {
+            color: var(--muted);
+            flex-shrink: 0;
+            font-size: 0.72rem;
+        }
+
+        .src {
+            flex-shrink: 0;
+            font-size: 0.7rem;
+            font-weight: 700;
+            width: 44px;
+            text-align: center;
+            border-radius: 3px;
+            padding: 0 3px;
+        }
+
+        .lvl {
+            flex-shrink: 0;
+            width: 48px;
+            font-size: 0.7rem;
+            font-weight: 700;
+        }
+
+        .room-badge {
+            flex-shrink: 0;
+            font-size: 0.68rem;
+            color: var(--blue);
+            background: #0a1a2a;
+            border-radius: 3px;
+            padding: 0 4px;
+        }
+
+        .msg {
+            color: var(--text);
+            word-break: break-all;
+        }
+
+        /* level colours */
+        .log-row.INFO {
+            border-left-color: transparent;
+        }
+
+        .log-row.DEBUG {
+            border-left-color: #1e293b;
+        }
+
+        .log-row.WARNING {
+            border-left-color: var(--yellow);
+        }
+
+        .log-row.ERROR {
+            border-left-color: var(--red);
+            background: rgba(239, 68, 68, .05);
+        }
+
+        .log-row.INFO .lvl {
+            color: #64748b;
+        }
+
+        .log-row.DEBUG .lvl {
+            color: #334155;
+        }
+
+        .log-row.WARNING .lvl {
+            color: var(--yellow);
+        }
+
+        .log-row.ERROR .lvl {
+            color: var(--red);
+        }
+
+        /* source badges */
+        .src.server {
+            background: #1a1230;
+            color: var(--purple2);
+        }
+
+        .src.bot {
+            background: #0a1f1a;
+            color: var(--green);
+        }
+
+        /* keyword highlights */
+        .kw-event {
+            color: var(--blue);
+        }
+
+        .kw-error {
+            color: var(--red);
+            font-weight: 600;
+        }
+
+        .kw-commit {
+            color: var(--green);
+            font-weight: 600;
+        }
+
+        .kw-barge {
+            color: var(--yellow);
+            font-weight: 600;
+        }
+
+        .kw-filter {
+            color: var(--muted);
+            font-style: italic;
+        }
+
+        audio {
+            display: none;
+        }
+
+        /* scrollbar */
+        #console::-webkit-scrollbar {
+            width: 5px;
+        }
+
+        #console::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        #console::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- HEADER -->
+    <header>
+        <div>
+            <h1>🎙 Abdion Voice Engine — Dev Console</h1>
+            <div class="tagline">Real-time server + bot log stream</div>
+        </div>
+        <div class="ws-badge">
+            <span class="ws-dot" id="wsDot"></span>
+            <span id="wsStatus">Logs: disconnected</span>
+        </div>
+    </header>
+
+    <!-- LEFT PANEL -->
+    <div class="panel-left">
+        <div>
+            <div class="section-title">Connection</div>
+            <label>Server URL</label>
+            <input id="serverUrl" value="http://localhost:8000" />
+            <label>Room Name</label>
+            <input id="roomName" value="quality-test" />
+            <label>Your Identity</label>
+            <input id="identity" value="dev-tester" />
+            <button class="btn" id="connectBtn" onclick="connectVoice()">🔌 Connect &amp; Talk</button>
+            <button class="btn" id="disconnectBtn" onclick="disconnectVoice()">✕ Disconnect</button>
+        </div>
+
+        <div class="status-pill">
+            <span class="dot idle" id="dot"></span>
+            <div class="mic-ring" id="micRing"></div>
+            <span id="statusText">Not connected</span>
+        </div>
+
+        <div>
+            <div class="section-title">Active Agents</div>
+            <div id="agentList"><span style="color:var(--muted)">None</span></div>
+        </div>
+
+        <div>
+            <div class="section-title">Quick Actions</div>
+            <button class="btn"
+                style="background:#0d1f2d;color:var(--blue);border:1px solid #1e3a5a;font-size:.8rem;padding:7px"
+                onclick="spawnBot()">⚡ Spawn Bot into Room</button>
+        </div>
+    </div>
+
+    <!-- RIGHT PANEL -->
+    <div class="panel-right">
+        <div class="log-toolbar">
+            <span>Filter:</span>
+            <button class="filter-btn active" id="f-all" onclick="setFilter('all')">All</button>
+            <button class="filter-btn" id="f-server" onclick="setFilter('server')">Server</button>
+            <button class="filter-btn" id="f-bot" onclick="setFilter('bot')">Bot</button>
+            <button class="filter-btn" id="f-error" onclick="setFilter('error')">Errors</button>
+            <label
+                style="margin-left:8px;display:flex;align-items:center;gap:4px;font-size:.75rem;color:var(--text2);cursor:pointer">
+                <input type="checkbox" id="autoScroll" checked style="width:auto"> Auto-scroll
+            </label>
+            <button class="clear-btn" onclick="clearLog()">🗑 Clear</button>
+        </div>
+        <div id="console"></div>
+    </div>
+
+    <!-- LiveKit JS SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+
+    <script>
+        // ── State ──────────────────────────────────────────────────────────────────
+        let room = null;
+        let logWs = null;
+        let logFilter = 'all';
+        let logEntries = [];   // {source, level, msg, ts, room, stream}
+        let agentPoll = null;
+
+        // ── Helpers ────────────────────────────────────────────────────────────────
+        function serverBase() { return document.getElementById('serverUrl').value.trim(); }
+
+        function fmtTime(ts) {
+            const d = new Date(ts * 1000);
+            return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+        }
+
+        // Highlight known keywords inside a log message
+        function highlight(msg) {
+            return msg
+                .replace(/(&lt;|<)(.*?)(>|&gt;)/g, '')  // strip HTML tags if any
+                .replace(/event=(\S+)/g, (_, e) => {
+                    if (/error|fail|crash|exception/i.test(e))
+                        return `event=<span class="kw-error">${e}</span>`;
+                    if (/commit|turn_committed/i.test(e))
+                        return `event=<span class="kw-commit">${e}</span>`;
+                    if (/barge_in/i.test(e))
+                        return `event=<span class="kw-barge">${e}</span>`;
+                    if (/filter/i.test(e))
+                        return `event=<span class="kw-filter">${e}</span>`;
+                    return `event=<span class="kw-event">${e}</span>`;
+                });
+        }
+
+        function entryMatchesFilter(e) {
+            if (logFilter === 'all') return true;
+            if (logFilter === 'server') return e.source === 'server';
+            if (logFilter === 'bot') return e.source === 'bot';
+            if (logFilter === 'error') return e.level === 'ERROR' || e.level === 'CRITICAL';
+            return true;
+        }
+
+        function renderEntry(e) {
+            const row = document.createElement('div');
+            row.className = `log-row ${e.level || 'INFO'}`;
+
+            const ts = document.createElement('span'); ts.className = 'ts'; ts.textContent = fmtTime(e.ts);
+            const src = document.createElement('span'); src.className = `src ${e.source}`; src.textContent = e.source.toUpperCase();
+            const lvl = document.createElement('span'); lvl.className = 'lvl'; lvl.textContent = (e.level || 'INFO').slice(0, 4);
+            const msg = document.createElement('span'); msg.className = 'msg'; msg.innerHTML = highlight(escHtml(e.msg));
+
+            row.appendChild(ts);
+            row.appendChild(src);
+            row.appendChild(lvl);
+
+            if (e.room) {
+                const rb = document.createElement('span'); rb.className = 'room-badge';
+                rb.textContent = e.room; row.appendChild(rb);
+            }
+
+            row.appendChild(msg);
+            return row;
+        }
+
+        function escHtml(s) {
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function addEntry(e) {
+            logEntries.push(e);
+            if (!entryMatchesFilter(e)) return;
+
+            const con = document.getElementById('console');
+            con.appendChild(renderEntry(e));
+
+            const autoScroll = document.getElementById('autoScroll').checked;
+            if (autoScroll) con.scrollTop = con.scrollHeight;
+        }
+
+        function rebuildLog() {
+            const con = document.getElementById('console');
+            con.innerHTML = '';
+            logEntries.filter(entryMatchesFilter).forEach(e => con.appendChild(renderEntry(e)));
+            const autoScroll = document.getElementById('autoScroll').checked;
+            if (autoScroll) con.scrollTop = con.scrollHeight;
+        }
+
+        function clearLog() { logEntries = []; document.getElementById('console').innerHTML = ''; }
+
+        function setFilter(f) {
+            logFilter = f;
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(`f-${f}`).classList.add('active');
+            rebuildLog();
+        }
+
+        // ── Log WebSocket ──────────────────────────────────────────────────────────
+        function connectLogWs() {
+            const wsUrl = serverBase().replace(/^http/, 'ws') + '/ws/logs';
+            const wsDot = document.getElementById('wsDot');
+            const wsStatus = document.getElementById('wsStatus');
+
+            logWs = new WebSocket(wsUrl);
+
+            logWs.onopen = () => {
+                wsDot.className = 'ws-dot on';
+                wsStatus.textContent = 'Logs: live ✓';
+                addEntry({ source: 'server', level: 'INFO', msg: '── Log stream connected ──', ts: Date.now() / 1000 });
+            };
+
+            logWs.onmessage = (ev) => {
+                try {
+                    const e = JSON.parse(ev.data);
+                    addEntry(e);
+                } catch { }
+            };
+
+            logWs.onclose = () => {
+                wsDot.className = 'ws-dot off';
+                wsStatus.textContent = 'Logs: disconnected — retrying…';
+                setTimeout(connectLogWs, 3000);  // auto-reconnect
+            };
+
+            logWs.onerror = () => {
+                wsDot.className = 'ws-dot off';
+                wsStatus.textContent = 'Logs: error';
+            };
+        }
+
+        // ── Voice connection ───────────────────────────────────────────────────────
+        function setVoiceStatus(state, text) {
+            const dot = document.getElementById('dot');
+            dot.className = `dot ${state}`;
+            document.getElementById('statusText').textContent = text;
+            document.getElementById('micRing').style.display = state === 'live' ? 'block' : 'none';
+        }
+
+        async function connectVoice() {
+            const connectBtn = document.getElementById('connectBtn');
+            const roomName = document.getElementById('roomName').value.trim();
+            const identity = document.getElementById('identity').value.trim();
+
+            connectBtn.disabled = true;
+            setVoiceStatus('connecting', 'Fetching token…');
+
+            let tokenData;
+            try {
+                const resp = await fetch(
+                    `${serverBase()}/join-token?room=${encodeURIComponent(roomName)}&identity=${encodeURIComponent(identity)}`
+                );
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+                tokenData = await resp.json();
+            } catch (e) {
+                setVoiceStatus('error', 'Token fetch failed');
+                connectBtn.disabled = false;
+                addEntry({ source: 'server', level: 'ERROR', msg: `Token error: ${e.message}`, ts: Date.now() / 1000 });
+                return;
+            }
+
+            const LK = window.LivekitClient;
+            room = new LK.Room({
+                adaptiveStream: true,
+                dynacast: true,
+                audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true },
+            });
+
+            room.on(LK.RoomEvent.Connected, () => {
+                setVoiceStatus('live', `🟢 Live in "${roomName}"`);
+                document.getElementById('disconnectBtn').style.display = 'flex';
+                connectBtn.style.display = 'none';
+            });
+
+            room.on(LK.RoomEvent.Disconnected, () => {
+                setVoiceStatus('idle', 'Disconnected');
+                document.getElementById('disconnectBtn').style.display = 'none';
+                connectBtn.style.display = 'flex';
+                connectBtn.disabled = false;
+            });
+
+            room.on(LK.RoomEvent.ParticipantConnected, (p) => {
+                addEntry({ source: 'server', level: 'INFO', msg: `👤 Participant joined: ${p.identity}`, ts: Date.now() / 1000 });
+            });
+
+            room.on(LK.RoomEvent.ParticipantDisconnected, (p) => {
+                addEntry({ source: 'server', level: 'WARNING', msg: `👋 Participant left: ${p.identity}`, ts: Date.now() / 1000 });
+            });
+
+            room.on(LK.RoomEvent.TrackSubscribed, (track, pub, participant) => {
+                if (track.kind === LK.Track.Kind.Audio) {
+                    addEntry({ source: 'server', level: 'INFO', msg: `🔊 Audio track subscribed from ${participant.identity}`, ts: Date.now() / 1000 });
+                    const audioEl = track.attach();
+                    document.body.appendChild(audioEl);
+                    audioEl.play().catch(() => {
+                        addEntry({ source: 'server', level: 'WARNING', msg: '⚠️ Autoplay blocked — click anywhere to unmute', ts: Date.now() / 1000 });
+                        document.body.addEventListener('click', () => audioEl.play(), { once: true });
+                    });
+                }
+            });
+
+            room.on(LK.RoomEvent.TrackUnsubscribed, (track) => { track.detach(); });
+
+            setVoiceStatus('connecting', 'Connecting to LiveKit…');
+            try {
+                await room.connect(tokenData.url, tokenData.token);
+            } catch (e) {
+                setVoiceStatus('error', 'Connection failed');
+                connectBtn.disabled = false;
+                addEntry({ source: 'server', level: 'ERROR', msg: `WebSocket connect error: ${e.message}`, ts: Date.now() / 1000 });
+                return;
+            }
+
+            try {
+                await room.localParticipant.setMicrophoneEnabled(true);
+                addEntry({ source: 'server', level: 'INFO', msg: '🎙 Microphone enabled — bot will hear you now', ts: Date.now() / 1000 });
+            } catch (e) {
+                addEntry({ source: 'server', level: 'ERROR', msg: `Mic error: ${e.message}`, ts: Date.now() / 1000 });
+            }
+        }
+
+        async function disconnectVoice() {
+            if (room) { await room.disconnect(); room = null; }
+        }
+
+        // ── Spawn bot ──────────────────────────────────────────────────────────────
+        async function spawnBot() {
+            const roomName = document.getElementById('roomName').value.trim();
+            try {
+                const resp = await fetch(`${serverBase()}/on-call`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ room_name: roomName, caller_id: 'dev-console' }),
+                });
+                const data = await resp.json();
+                addEntry({
+                    source: 'server', level: resp.ok ? 'INFO' : 'ERROR',
+                    msg: resp.ok ? `✅ Bot spawned: pid=${data.pid} room=${data.room}` : `❌ Spawn failed: ${JSON.stringify(data)}`,
+                    ts: Date.now() / 1000
+                });
+            } catch (e) {
+                addEntry({ source: 'server', level: 'ERROR', msg: `Spawn error: ${e.message}`, ts: Date.now() / 1000 });
+            }
+        }
+
+        // ── Agent list polling ─────────────────────────────────────────────────────
+        async function pollAgents() {
+            try {
+                const resp = await fetch(`${serverBase()}/agents`);
+                const agents = await resp.json();
+                const el = document.getElementById('agentList');
+                if (!agents.length) {
+                    el.innerHTML = '<span style="color:var(--muted)">None</span>';
+                } else {
+                    el.innerHTML = agents.map(a =>
+                        `<div class="agent-row">
+            <span class="agent-room">${a.room_name}</span>
+            <span style="color:var(--text2);font-size:.72rem">PID ${a.pid}</span>
+            <span class="agent-uptime">${a.uptime_sec}s</span>
+          </div>`
+                    ).join('');
+                }
+            } catch { }
+        }
+
+        // ── Init ───────────────────────────────────────────────────────────────────
+        connectLogWs();
+        agentPoll = setInterval(pollAgents, 2000);
+        pollAgents();
+    </script>
+</body>
+
+</html>
