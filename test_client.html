@@ -234,6 +234,124 @@
             }
         }
 
+        @keyframes expand {
+            100% {
+                transform: scale(2.5);
+                opacity: 0;
+            }
+        }
+
+        /* ── Config Panel ──────────────────────────────────────────────── */
+        .config-section {
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+
+        .config-group {
+            margin-bottom: 10px;
+        }
+
+        .config-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            color: var(--purple);
+            font-weight: 600;
+            font-size: 0.8rem;
+        }
+
+        .slider-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .slider-row input[type=range] {
+            flex: 1;
+            accent-color: var(--purple);
+        }
+
+        .slider-row .val {
+            font-size: 0.75rem;
+            color: var(--text2);
+            width: 32px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .toggle-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+
+        .toggle-row label {
+            margin: 0;
+            display: inline-block;
+        }
+
+        textarea {
+            width: 100%;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            padding: 8px 12px;
+            color: var(--text);
+            font-size: 0.8rem;
+            font-family: inherit;
+            outline: none;
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        textarea:focus {
+            border-color: var(--purple);
+        }
+
+        select {
+            width: 100%;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            padding: 6px 10px;
+            color: var(--text);
+            font-size: 0.8rem;
+            outline: none;
+            margin-bottom: 8px;
+        }
+
+        .config-controls {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .config-btn {
+            flex: 1;
+            padding: 6px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text);
+            cursor: pointer;
+        }
+
+        .config-btn:hover {
+            border-color: var(--purple);
+        }
+
+        .config-btn.primary {
+            background: var(--purple);
+            color: white;
+            border-color: var(--purple);
+        }
+
         /* Active agents panel */
         #agentList {
             font-size: 0.78rem;
@@ -505,6 +623,100 @@
             <span id="statusText">Not connected</span>
         </div>
 
+        <!-- ⚙ CONFIGURATION PANEL -->
+        <div>
+            <div class="section-title" style="display:flex; justify-content:space-between; cursor:pointer;"
+                onclick="document.getElementById('configPanel').style.display = document.getElementById('configPanel').style.display === 'none' ? 'block' : 'none'">
+                <span>⚙ Configuration</span>
+                <span style="font-size:0.6rem">▼</span>
+            </div>
+
+            <div id="configPanel" style="display:none;">
+                <!-- System Prompt -->
+                <div class="config-section">
+                    <div class="config-header">System Prompt</div>
+                    <textarea id="cfg_prompt" placeholder="You are a multilingual AI..."></textarea>
+                </div>
+
+                <!-- LLM (Groq) -->
+                <div class="config-section">
+                    <div class="config-header">LLM (Groq)</div>
+                    <label>Model</label>
+                    <select id="cfg_llm_model">
+                        <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option>
+                        <option value="llama-3.1-8b-instant">llama-3.1-8b-instant</option>
+                        <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
+                    </select>
+
+                    <label>Temperature</label>
+                    <div class="slider-row">
+                        <input type="range" id="cfg_llm_temp" min="0" max="2" step="0.1" value="0.7"
+                            oninput="this.nextElementSibling.textContent=this.value">
+                        <span class="val">0.7</span>
+                    </div>
+
+                    <label>Top P</label>
+                    <div class="slider-row">
+                        <input type="range" id="cfg_llm_topp" min="0" max="1" step="0.05" value="1.0"
+                            oninput="this.nextElementSibling.textContent=this.value">
+                        <span class="val">1.0</span>
+                    </div>
+                </div>
+
+                <!-- TTS (ElevenLabs) -->
+                <div class="config-section">
+                    <div class="config-header">TTS (ElevenLabs)</div>
+                    <label>Voice ID</label>
+                    <input id="cfg_tts_voice" type="text" value="21m00Tcm4TlvDq8ikWAM" style="margin-bottom:8px" />
+
+                    <label>Model</label>
+                    <select id="cfg_tts_model">
+                        <option value="eleven_turbo_v2_5">eleven_turbo_v2_5</option>
+                        <option value="eleven_multilingual_v2">eleven_multilingual_v2</option>
+                    </select>
+
+                    <label>Stability</label>
+                    <div class="slider-row">
+                        <input type="range" id="cfg_tts_stab" min="0" max="1" step="0.05" value="0.5"
+                            oninput="this.nextElementSibling.textContent=this.value">
+                        <span class="val">0.5</span>
+                    </div>
+
+                    <label>Similarity Boost</label>
+                    <div class="slider-row">
+                        <input type="range" id="cfg_tts_sim" min="0" max="1" step="0.05" value="0.75"
+                            oninput="this.nextElementSibling.textContent=this.value">
+                        <span class="val">0.75</span>
+                    </div>
+
+                    <label>Speed</label>
+                    <div class="slider-row">
+                        <input type="range" id="cfg_tts_spd" min="0.5" max="2" step="0.1" value="1.0"
+                            oninput="this.nextElementSibling.textContent=this.value">
+                        <span class="val">1.0</span>
+                    </div>
+                </div>
+
+                <!-- Turn Gate -->
+                <div class="config-section">
+                    <div class="config-header">Turn Detection Gate</div>
+                    <label>Semantic Wait Window (sec)</label>
+                    <div class="slider-row">
+                        <input type="range" id="cfg_vad_ext" min="0.5" max="3" step="0.1" value="1.2"
+                            oninput="this.nextElementSibling.textContent=this.value">
+                        <span class="val">1.2</span>
+                    </div>
+                </div>
+
+                <div class="config-controls">
+                    <button class="config-btn" onclick="loadConfig()">Reload</button>
+                    <button class="config-btn primary" onclick="saveConfig()">Save Default</button>
+                </div>
+                <div id="cfgStatus"
+                    style="font-size:0.7rem; color:var(--green); text-align:center; height:12px; margin-top:4px"></div>
+            </div>
+        </div>
+
         <div>
             <div class="section-title">Active Agents</div>
             <div id="agentList"><span style="color:var(--muted)">None</span></div>
@@ -760,14 +972,105 @@
             if (room) { await room.disconnect(); room = null; }
         }
 
+        // ── Config Management ──────────────────────────────────────────────────────
+        function getConfigPayload() {
+            return {
+                system_prompt: document.getElementById('cfg_prompt').value,
+                groq: {
+                    model: document.getElementById('cfg_llm_model').value,
+                    temperature: parseFloat(document.getElementById('cfg_llm_temp').value),
+                    top_p: parseFloat(document.getElementById('cfg_llm_topp').value)
+                },
+                elevenlabs: {
+                    voice_id: document.getElementById('cfg_tts_voice').value,
+                    model: document.getElementById('cfg_tts_model').value,
+                    stability: parseFloat(document.getElementById('cfg_tts_stab').value),
+                    similarity_boost: parseFloat(document.getElementById('cfg_tts_sim').value),
+                    speed: parseFloat(document.getElementById('cfg_tts_spd').value)
+                },
+                turn_gate: {
+                    semantic_extension_sec: parseFloat(document.getElementById('cfg_vad_ext').value)
+                }
+            };
+        }
+
+        async function loadConfig() {
+            try {
+                const resp = await fetch(`${serverBase()}/config`);
+                if (!resp.ok) throw new Error();
+                const cfg = await resp.json();
+
+                if (cfg.system_prompt) document.getElementById('cfg_prompt').value = cfg.system_prompt;
+
+                if (cfg.groq) {
+                    if (cfg.groq.model) document.getElementById('cfg_llm_model').value = cfg.groq.model;
+                    if (cfg.groq.temperature !== undefined) updateSlider('cfg_llm_temp', cfg.groq.temperature);
+                    if (cfg.groq.top_p !== undefined) updateSlider('cfg_llm_topp', cfg.groq.top_p);
+                }
+
+                if (cfg.elevenlabs) {
+                    if (cfg.elevenlabs.voice_id) document.getElementById('cfg_tts_voice').value = cfg.elevenlabs.voice_id;
+                    if (cfg.elevenlabs.model) document.getElementById('cfg_tts_model').value = cfg.elevenlabs.model;
+                    if (cfg.elevenlabs.stability !== undefined) updateSlider('cfg_tts_stab', cfg.elevenlabs.stability);
+                    if (cfg.elevenlabs.similarity_boost !== undefined) updateSlider('cfg_tts_sim', cfg.elevenlabs.similarity_boost);
+                    if (cfg.elevenlabs.speed !== undefined) updateSlider('cfg_tts_spd', cfg.elevenlabs.speed);
+                }
+
+                if (cfg.turn_gate && cfg.turn_gate.semantic_extension_sec !== undefined) {
+                    updateSlider('cfg_vad_ext', cfg.turn_gate.semantic_extension_sec);
+                }
+
+                document.getElementById('cfgStatus').textContent = "Loaded defaults";
+                setTimeout(() => document.getElementById('cfgStatus').textContent = "", 2000);
+            } catch (e) {
+                console.error("Failed to load config", e);
+            }
+        }
+
+        function updateSlider(id, val) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.value = val;
+                if (el.nextElementSibling) el.nextElementSibling.textContent = val;
+            }
+        }
+
+        async function saveConfig() {
+            try {
+                const payload = getConfigPayload();
+                const resp = await fetch(`${serverBase()}/config`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!resp.ok) throw new Error();
+
+                document.getElementById('cfgStatus').textContent = "Saved to disk";
+                setTimeout(() => document.getElementById('cfgStatus').textContent = "", 2000);
+            } catch (e) {
+                document.getElementById('cfgStatus').style.color = "var(--red)";
+                document.getElementById('cfgStatus').textContent = "Save failed";
+                setTimeout(() => {
+                    document.getElementById('cfgStatus').textContent = "";
+                    document.getElementById('cfgStatus').style.color = "var(--green)";
+                }, 2000);
+            }
+        }
+
         // ── Spawn bot ──────────────────────────────────────────────────────────────
         async function spawnBot() {
             const roomName = document.getElementById('roomName').value.trim();
+            const configPayload = getConfigPayload();
+
             try {
                 const resp = await fetch(`${serverBase()}/on-call`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ room_name: roomName, caller_id: 'dev-console' }),
+                    body: JSON.stringify({
+                        room_name: roomName,
+                        caller_id: 'dev-console',
+                        config: configPayload
+                    }),
                 });
                 const data = await resp.json();
                 addEntry({
@@ -804,6 +1107,7 @@
         connectLogWs();
         agentPoll = setInterval(pollAgents, 2000);
         pollAgents();
+        loadConfig(); // Load initial config on page load
     </script>
 </body>
 

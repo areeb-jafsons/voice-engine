@@ -1,5 +1,5 @@
 # =============================================================================
-# Abdion Voice Engine — apps/voice_engine/requirements.txt
+# Abdion Voice Engine — requirements.txt
 # Pinned for February 2026 compatibility
 # Python 3.12 recommended
 # =============================================================================

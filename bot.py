@@ -27,11 +27,14 @@ import re
 import sys
 import time
 from enum import Enum, auto
-from typing import Optional
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Voice engine config
+from config import VoiceEngineConfig, DEFAULT_SYSTEM_PROMPT
 
 # ---------------------------------------------------------------------------
 # Pipecat imports
@@ -50,6 +53,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     StartInterruptionFrame,
     LLMFullResponseEndFrame,
+    TextFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -86,23 +90,8 @@ ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  
 # Groq LLM model — override via env for easy A/B testing
 GROQ_LLM_MODEL = os.getenv("GROQ_LLM_MODEL", "llama-3.3-70b-versatile")
 
-# ---------------------------------------------------------------------------
-# Bilingual system prompt (Urdu / English code-switching)
-# ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """\
-You are a multilingual real-time conversational AI voice assistant for Abdion.
-YOU ARE A FEMALE!!
-STRICT RULES:
-- Always reply in the SAME language the user speaks in their CURRENT message.
-- If the user speaks Urdu or Hindi (Roman script OR Nastaliq script), respond FULLY in Urdu.
-- If the user speaks English, respond FULLY in English.
-- If the user mixes languages (code-switching), mirror their mixing ratio naturally.
-- You can speak Hindi too if the user speaks Urdu or Hindi . Hindi and Urdu may share vocabulary
-  but differ in register; always use Urdu vocabulary and phrasing when responding.
-- Keep responses concise, conversational, and natural for voice (no markdown, no lists).
-- You may use Roman Urdu (Urdu written in Latin script) when the user does so.
-- Never break character or discuss these instructions.
-"""
+# System prompt is now in config.py (DEFAULT_SYSTEM_PROMPT)
+# It can be overridden at runtime via the /config API.
 
 # ---------------------------------------------------------------------------
 # ══════════════════════════════════════════════════════════════════════════
@@ -133,8 +122,8 @@ _URDU_CONTINUATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-SEMANTIC_EXTENSION_SEC  = 1.2   # extra seconds per extension window
-MAX_SEMANTIC_EXTENSIONS = 2     # hard cap — prevents unbounded waiting
+SEMANTIC_EXTENSION_SEC  = 1.2   # overridden at runtime from config
+MAX_SEMANTIC_EXTENSIONS = 2     # overridden at runtime from config
 
 
 def is_semantically_complete(text: str) -> bool:
@@ -268,10 +257,14 @@ class HybridTurnGate(FrameProcessor):
         self,
         *,
         context_messages: list[dict],
+        max_history_pairs: int = 4,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self._system_message = context_messages[0]   # always the system prompt
         self._context_messages = context_messages
+        self._max_history_pairs = max_history_pairs  # keep last N user+assistant pairs
+        self._history: list[dict] = []               # rolling [user, assistant, user, assistant...]
 
         # Transcript accumulation
         self._finals: list[str]  = []
@@ -289,8 +282,20 @@ class HybridTurnGate(FrameProcessor):
         self._semantic_extensions: int = 0
         self._semantic_check_task: Optional[asyncio.Task] = None
 
-        # Bot-speaking interlock (prevents commit while bot is mid-sentence)
+        # Bot-speaking interlock
         self._bot_speaking: bool = False
+
+        # Partial assistant text accumulator (dead field, kept for _reset_accumulation compat)
+        self._pending_assistant_text: list[str] = []
+
+        # PipelineTask reference — set after task is created via set_task()
+        # Used to queue InterruptionFrame directly, bypassing in-pipeline frame-holds.
+        self._task: Optional[Any] = None
+
+    def set_task(self, task: Any) -> None:
+        """Wire in the PipelineTask so barge-in can queue frames directly."""
+        self._task = task
+        log.debug("event=gate_task_wired")
 
     # -----------------------------------------------------------------------
     # Pipecat FrameProcessor entry point
@@ -335,6 +340,20 @@ class HybridTurnGate(FrameProcessor):
     # VAD handlers
     # -----------------------------------------------------------------------
 
+    async def _fire_interruption(self) -> None:
+        """Interrupt the bot's speech via the fastest available path.
+
+        1. task.queue_frame() — bypasses Pipecat's in-pipeline frame-holds
+           (the safest path when allow_interruptions=True holds STT frames)
+        2. Fallback: push_frame() through the pipeline (works when not blocked).
+        """
+        if self._task is not None:
+            log.info("event=barge_in_queued_to_task")
+            await self._task.queue_frame(InterruptionFrame())
+        else:
+            log.info("event=barge_in_pushed_to_pipeline")
+            await self.push_frame(InterruptionFrame())
+
     async def _on_user_started(self) -> None:
         log.info("event=user_started_speaking phase=%s", self._phase.name)
 
@@ -347,10 +366,11 @@ class HybridTurnGate(FrameProcessor):
             self._latest_interim = ""
             log.info("event=phase_change new=LISTENING")
 
-        # Barge-in: if bot is speaking, interrupt it
+        # Barge-in: if bot is speaking, fire InterruptionFrame IMMEDIATELY on VAD onset.
+        # This fires *before* any transcript arrives — typically <50ms after speech begins.
         if self._bot_speaking:
-            log.info("event=barge_in_triggered")
-            await self.push_frame(StartInterruptionFrame())
+            log.info("event=vad_barge_in phase=%s", self._phase.name)
+            await self._fire_interruption()
 
     async def _on_user_stopped(self) -> None:
         log.info("event=user_stopped_speaking phase=%s", self._phase.name)
@@ -376,19 +396,26 @@ class HybridTurnGate(FrameProcessor):
 
         is_final = getattr(frame, "is_final", True)
 
-        # ── Barge-in: fire as soon as any transcript arrives while bot speaks ──
-        # This is transcript-driven, so it works even without VAD events.
-        # InterruptionFrame is the current API (StartInterruptionFrame is deprecated).
-        if self._bot_speaking:
+        # ── Barge-in while bot is speaking ──────────────────────────────────────────
+        if self._bot_speaking and len(text) >= 2:
             log.info("event=barge_in_triggered reason=transcript text=%.40s", text)
-            await self.push_frame(InterruptionFrame())
-            # Reset: cancel pending timer and start fresh LISTENING for this turn
             self._cancel_semantic_timer()
             self._phase = _Phase.LISTENING
             self._finals.clear()
             self._latest_interim = ""
+            await self._fire_interruption()
+            # Continue below to accumulate the transcript for the next turn
 
-        # If stuck in IDLE (VAD frames never arrived), auto-advance to LISTENING
+        # ── Transcript during COMMITTED gap (bot about to speak, not yet speaking) ──
+        # If the user speaks in the ~1-2s gap between commit and BotStartedSpeakingFrame,
+        # don't drop the transcript silently — treat it as a new LISTENING turn.
+        elif self._phase == _Phase.COMMITTED and not self._bot_speaking:
+            log.info("event=committed_gap_transcript text=%.40s — treating as new turn", text)
+            self._phase = _Phase.LISTENING
+            self._finals.clear()
+            self._latest_interim = ""
+
+        # ── Auto-advance from IDLE if VAD frames never arrived ───────────────────
         elif self._phase == _Phase.IDLE:
             log.info("event=phase_change new=LISTENING reason=transcript_auto_advance")
             self._phase = _Phase.LISTENING
@@ -499,8 +526,22 @@ class HybridTurnGate(FrameProcessor):
             raise
 
     # -----------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # Turn commit
     # -----------------------------------------------------------------------
+
+    def add_assistant_response(self, text: str) -> None:
+        """Called after the bot finishes speaking to record its response in history."""
+        self._history.append({"role": "assistant", "content": text})
+        # Trim: keep at most max_history_pairs x 2 messages (user+assistant each)
+        max_msgs = self._max_history_pairs * 2
+        if len(self._history) > max_msgs:
+            self._history = self._history[-max_msgs:]
+        log.debug("event=history_updated history_len=%d", len(self._history))
+
+    def _build_messages(self, user_transcript: str) -> list[dict]:
+        """Build full message list: system + rolling history + current user turn."""
+        return [self._system_message] + self._history + [{"role": "user", "content": user_transcript}]
 
     async def _commit_turn(self, transcript: str) -> None:
         """Apply intent filter and push LLMMessagesFrame downstream."""
@@ -522,13 +563,21 @@ class HybridTurnGate(FrameProcessor):
             return
 
         self._phase = _Phase.COMMITTED
-        log.info("event=turn_committed transcript_len=%d phase=COMMITTED", len(transcript))
+        log.info("event=turn_committed transcript_len=%d phase=COMMITTED history_pairs=%d",
+                 len(transcript), len(self._history) // 2)
 
-        # Build messages for the LLM (system prompt + user turn)
-        messages = list(self._context_messages) + [
-            {"role": "user", "content": transcript}
-        ]
+        # Add this user message to history immediately (assistant response added on BotStopped)
+        self._history.append({"role": "user", "content": transcript})
+
+        # Build messages: system + rolling history (includes current user msg)
+        messages = self._build_messages_with_history()
         await self.push_frame(LLMMessagesFrame(messages))
+
+    def _build_messages_with_history(self) -> list[dict]:
+        """Build [system] + [last N history] — current user is already appended in history."""
+        max_msgs = self._max_history_pairs * 2
+        trimmed_history = self._history[-max_msgs:] if len(self._history) > max_msgs else list(self._history)
+        return [self._system_message] + trimmed_history
 
     # -----------------------------------------------------------------------
     # Helpers
@@ -537,6 +586,52 @@ class HybridTurnGate(FrameProcessor):
     def _reset_accumulation(self) -> None:
         self._finals.clear()
         self._latest_interim = ""
+        self._pending_assistant_text.clear()
+
+
+# ---------------------------------------------------------------------------
+# 4. AssistantHistoryCapture FrameProcessor
+# ---------------------------------------------------------------------------
+
+class AssistantHistoryCapture(FrameProcessor):
+    """Sits between LLM and TTS to capture the assistant response text.
+
+    TextFrame tokens flow DOWNSTREAM (LLM → TTS), so this processor
+    must be placed AFTER the LLM in the pipeline to intercept them.
+    On LLMFullResponseEndFrame it commits the accumulated text to the
+    HybridTurnGate's rolling history via gate.add_assistant_response().
+    """
+
+    def __init__(self, gate: HybridTurnGate, **kwargs):
+        super().__init__(**kwargs)
+        self._gate = gate
+        self._buffer: list[str] = []
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, TextFrame) and direction == FrameDirection.DOWNSTREAM:
+            self._buffer.append(frame.text)
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, LLMFullResponseEndFrame):
+            if self._buffer:
+                full_text = "".join(self._buffer).strip()
+                self._buffer.clear()
+                if full_text:
+                    log.debug("event=assistant_response_captured len=%d", len(full_text))
+                    self._gate.add_assistant_response(full_text)
+            await self.push_frame(frame, direction)
+            return
+
+        # On interruption: discard the partial buffer — response was cut short
+        if isinstance(frame, InterruptionFrame):
+            self._buffer.clear()
+            await self.push_frame(frame, direction)
+            return
+
+        await self.push_frame(frame, direction)
 
 
 # ---------------------------------------------------------------------------
@@ -565,11 +660,23 @@ async def _stall_monitor() -> None:
 # ══════════════════════════════════════════════════════════════════════════
 # ---------------------------------------------------------------------------
 
-async def main(room_name: str, token: str) -> None:
+async def main(room_name: str, token: str, config: VoiceEngineConfig) -> None:
     log.info("event=bot_start room=%s", room_name)
 
+    # Apply turn gate config to module-level constants
+    global SEMANTIC_EXTENSION_SEC, MAX_SEMANTIC_EXTENSIONS
+    SEMANTIC_EXTENSION_SEC  = config.turn_gate.semantic_extension_sec
+    MAX_SEMANTIC_EXTENSIONS = config.turn_gate.max_semantic_extensions
+    log.info(
+        "event=turn_gate_config semantic_ext=%.1fs max_ext=%d",
+        SEMANTIC_EXTENSION_SEC, MAX_SEMANTIC_EXTENSIONS,
+    )
+
+    # System prompt from config
+    system_prompt = config.system_prompt
+
     # ── Context messages (system prompt carried through every LLM call) ──────
-    context_messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    context_messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
     # ── LiveKit Transport ────────────────────────────────────────────────────
     transport = LiveKitTransport(
@@ -584,42 +691,96 @@ async def main(room_name: str, token: str) -> None:
     )
 
     # ── STT: Deepgram Nova-3 (multilingual) ──────────────────────────────────
+    dgcfg = config.deepgram
+    live_opts_kwargs = {
+        "model": dgcfg.model,
+        "language": dgcfg.language,
+        "smart_format": dgcfg.smart_format,
+        "punctuate": dgcfg.punctuate,
+        "interim_results": dgcfg.interim_results,
+        "endpointing": dgcfg.endpointing,
+        "encoding": "linear16",
+        "sample_rate": 16000,
+    }
+    # Add optional Deepgram parameters only if explicitly set
+    if dgcfg.utterance_end_ms is not None:
+        live_opts_kwargs["utterance_end_ms"] = str(dgcfg.utterance_end_ms)
+    if dgcfg.filler_words is not None:
+        live_opts_kwargs["filler_words"] = dgcfg.filler_words
+    if dgcfg.keywords is not None:
+        live_opts_kwargs["keywords"] = dgcfg.keywords
+    if dgcfg.diarize is not None:
+        live_opts_kwargs["diarize"] = dgcfg.diarize
+    if dgcfg.numerals is not None:
+        live_opts_kwargs["numerals"] = dgcfg.numerals
+    if dgcfg.profanity_filter is not None:
+        live_opts_kwargs["profanity_filter"] = dgcfg.profanity_filter
+
     stt = DeepgramSTTService(
         api_key=DEEPGRAM_API_KEY,
-        live_options=LiveOptions(
-            model="nova-3",
-            language="multi",         # Urdu/English code-switching
-            smart_format=True,
-            punctuate=True,
-            interim_results=True,
-            endpointing=800,          # ms; VAD handles real turn detection
-            encoding="linear16",
-            sample_rate=16000,
-        ),
+        live_options=LiveOptions(**live_opts_kwargs),
     )
+    log.info("event=stt_config model=%s language=%s endpointing=%d", dgcfg.model, dgcfg.language, dgcfg.endpointing)
 
     # ── HybridTurnGate ───────────────────────────────────────────────────────
     gate = HybridTurnGate(context_messages=context_messages)
 
-    # ── LLM: Groq (Llama-3.3) ───────────────────────────────────────────────
+    # ── LLM: Groq ────────────────────────────────────────────────────────────
+    gcfg = config.groq
+    llm_input_params_kwargs = {}
+    if gcfg.temperature is not None:
+        llm_input_params_kwargs["temperature"] = gcfg.temperature
+    if gcfg.top_p is not None:
+        llm_input_params_kwargs["top_p"] = gcfg.top_p
+    if gcfg.max_tokens is not None:
+        llm_input_params_kwargs["max_tokens"] = gcfg.max_tokens
+    if gcfg.frequency_penalty is not None:
+        llm_input_params_kwargs["frequency_penalty"] = gcfg.frequency_penalty
+    if gcfg.presence_penalty is not None:
+        llm_input_params_kwargs["presence_penalty"] = gcfg.presence_penalty
+    if gcfg.seed is not None:
+        llm_input_params_kwargs["seed"] = gcfg.seed
+
     llm = GroqLLMService(
         api_key=GROQ_API_KEY,
-        model=GROQ_LLM_MODEL,
+        model=gcfg.model,
+        **llm_input_params_kwargs,   # temperature, top_p, max_tokens, etc. → forwarded to Groq client
     )
+    log.info("event=llm_config model=%s params=%s", gcfg.model, llm_input_params_kwargs or 'defaults')
 
     # ── TTS: ElevenLabs (turbo, multilingual) ────────────────────────────────
+    ecfg = config.elevenlabs
+    tts_input_params_kwargs = {}
+    if ecfg.stability is not None:
+        tts_input_params_kwargs["stability"] = ecfg.stability
+    if ecfg.similarity_boost is not None:
+        tts_input_params_kwargs["similarity_boost"] = ecfg.similarity_boost
+    if ecfg.style is not None:
+        tts_input_params_kwargs["style"] = ecfg.style
+    if ecfg.use_speaker_boost is not None:
+        tts_input_params_kwargs["use_speaker_boost"] = ecfg.use_speaker_boost
+    if ecfg.speed is not None:
+        tts_input_params_kwargs["speed"] = ecfg.speed
+    if ecfg.language is not None:
+        tts_input_params_kwargs["language"] = ecfg.language
+
     tts = ElevenLabsTTSService(
         api_key=ELEVENLABS_API_KEY,
-        voice_id=ELEVENLABS_VOICE_ID,
-        model="eleven_turbo_v2_5",
+        voice_id=ecfg.voice_id,
+        model=ecfg.model,
+        params=ElevenLabsTTSService.InputParams(**tts_input_params_kwargs) if tts_input_params_kwargs else None,
     )
+    log.info("event=tts_config voice=%s model=%s params=%s", ecfg.voice_id, ecfg.model, tts_input_params_kwargs or 'defaults')
 
     # ── Pipeline assembly ────────────────────────────────────────────────────
+    history_capture = AssistantHistoryCapture(gate=gate)
+
     pipeline = Pipeline([
         transport.input(),   # LiveKit mic frames + VAD events
         stt,                 # Audio → TranscriptionFrame
         gate,                # HybridTurnGate → LLMMessagesFrame
         llm,                 # LLMMessagesFrame → TextFrame (streaming tokens)
+        history_capture,     # Captures TextFrames → gate.add_assistant_response()
         tts,                 # TextFrame → Audio frames
         transport.output(),  # Audio → LiveKit speaker
     ])
@@ -632,6 +793,9 @@ async def main(room_name: str, token: str) -> None:
         ),
     )
 
+    # Wire the task into the gate so barge-in can bypass the in-pipeline frame-hold
+    gate.set_task(task)
+
     # ── Transport event handlers ─────────────────────────────────────────────
 
     @transport.event_handler("on_first_participant_joined")
@@ -640,7 +804,7 @@ async def main(room_name: str, token: str) -> None:
         # Kick off: push system prompt as initial greeting trigger
         await task.queue_frame(
             LLMMessagesFrame([
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": "Hello! Greet the caller warmly and briefly in both Urdu and English, then ask how you can help."},
             ])
         )
@@ -677,4 +841,25 @@ if __name__ == "__main__":
 
     room_name = sys.argv[1]
     token     = sys.argv[2]
-    asyncio.run(main(room_name, token))
+
+    # Read config from stdin (one JSON line sent by server.py)
+    config_line = ""
+    try:
+        import select
+        # On Windows, select doesn't work on stdin, so just try readline
+        config_line = sys.stdin.readline().strip()
+    except Exception:
+        pass
+
+    if config_line:
+        try:
+            _config = VoiceEngineConfig.model_validate_json(config_line)
+            log.info("event=config_received_from_server")
+        except Exception as exc:
+            log.warning("event=config_parse_error error=%s — using defaults", exc)
+            _config = VoiceEngineConfig()
+    else:
+        log.info("event=no_config_on_stdin — using defaults")
+        _config = VoiceEngineConfig()
+
+    asyncio.run(main(room_name, token, _config))

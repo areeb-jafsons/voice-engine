@@ -31,8 +31,14 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
+import threading
 import time
+
+if sys.platform == 'win32':
+    # Required for asyncio.create_subprocess_exec to work in FastAPI on Windows
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 from datetime import timedelta
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -46,6 +52,9 @@ from pydantic import BaseModel
 
 # LiveKit Server SDK for JWT token generation
 from livekit.api import AccessToken, VideoGrants
+
+# Voice engine config
+from config import VoiceEngineConfig
 
 load_dotenv()
 
@@ -138,6 +147,12 @@ MAX_CONCURRENT_CALLS = int(os.getenv("MAX_CONCURRENT_CALLS", "200"))
 BOT_TOKEN_TTL_SEC    = int(os.getenv("BOT_TOKEN_TTL_SEC",    "3600"))   # 1 hour
 GRACEFUL_STOP_SEC    = float(os.getenv("GRACEFUL_STOP_SEC",  "5.0"))    # SIGTERM→SIGKILL
 
+# ---------------------------------------------------------------------------
+# Global runtime config (loaded from disk, mutable via API)
+# ---------------------------------------------------------------------------
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
+global_config = VoiceEngineConfig.load(CONFIG_PATH)
+
 
 # ---------------------------------------------------------------------------
 # Active agent registry
@@ -183,24 +198,45 @@ def _make_bot_token(room_name: str, participant_identity: str) -> str:
 # Process lifecycle helpers
 # ---------------------------------------------------------------------------
 
-async def _relay_stream(
-    stream: asyncio.StreamReader,
+_SENTINEL = object()     # signals the queue that the stream is exhausted
+
+
+def _pipe_reader_thread(pipe, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop) -> None:
+    """Blocking thread: read lines from pipe, push to asyncio queue via call_soon_threadsafe."""
+    try:
+        for raw in pipe:
+            line = raw.decode(errors="replace").rstrip() if isinstance(raw, (bytes, bytearray)) else raw.rstrip()
+            if line:
+                loop.call_soon_threadsafe(queue.put_nowait, line)
+    except Exception:
+        pass
+    finally:
+        loop.call_soon_threadsafe(queue.put_nowait, _SENTINEL)
+
+
+async def _relay_pipe(
+    pipe,
     room_name: str,
     pid: int,
     stream_name: str,
 ) -> None:
-    """Read bot stdout/stderr line-by-line and broadcast + echo to server log."""
+    """Drain the line queue and broadcast each line to WebSocket clients."""
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    t = threading.Thread(
+        target=_pipe_reader_thread,
+        args=(pipe, queue, loop),
+        daemon=True,
+        name=f"pipe_{stream_name}_{pid}",
+    )
+    t.start()
+
     while True:
-        try:
-            raw = await stream.readline()
-        except Exception:
+        item = await queue.get()
+        if item is _SENTINEL:
             break
-        if not raw:
-            break
-        line = raw.decode(errors="replace").rstrip()
-        if not line:
-            continue
-        # echo to server terminal too
+        line = item
         print(f"[bot:{room_name}:{stream_name}] {line}", flush=True)
         await broadcaster.broadcast({
             "source": "bot",
@@ -213,43 +249,75 @@ async def _relay_stream(
         })
 
 
-async def _spawn_bot(room_name: str, token: str) -> AgentRecord:
-    """Spawn an isolated bot.py subprocess with captured output."""
+async def _spawn_bot(room_name: str, token: str, config: VoiceEngineConfig) -> AgentRecord:
+    """Spawn an isolated bot.py subprocess with captured output.
+
+    Uses subprocess.Popen + run_in_executor for Windows compatibility.
+    Config is delivered as a single JSON line written to bot stdin.
+    """
     log.info("event=spawning_bot room=%s", room_name)
 
-    proc = await asyncio.create_subprocess_exec(
-        PYTHON_EXE, BOT_SCRIPT, room_name, token,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,   # capture → relay to WS clients
-        stderr=asyncio.subprocess.PIPE,
-        env=os.environ.copy(),
-    )
+    config_json = (config.model_dump_json(exclude_none=True) + "\n").encode("utf-8")
+    loop = asyncio.get_event_loop()
+
+    def _popen() -> subprocess.Popen:
+        """Run in a thread — Popen is blocking but very fast."""
+        p = subprocess.Popen(
+            [PYTHON_EXE, BOT_SCRIPT, room_name, token],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=os.environ.copy(),
+        )
+        try:
+            p.stdin.write(config_json)
+            p.stdin.flush()
+            p.stdin.close()
+        except Exception as exc:
+            log.warning("event=config_write_failed room=%s error=%s", room_name, exc)
+        return p
+
+    raw_proc = await loop.run_in_executor(None, _popen)
+
+    # Thin async wrapper so existing watcher/stop code still works
+    class _AsyncProc:
+        def __init__(self, p: subprocess.Popen):
+            self._p = p
+            self.pid = p.pid
+            self.stdout = p.stdout
+            self.stderr = p.stderr
+            self.returncode: Optional[int] = None
+
+        async def wait(self) -> int:
+            rc = await loop.run_in_executor(None, self._p.wait)
+            self.returncode = rc
+            return rc
+
+        def kill(self):
+            self._p.kill()
+
+        def terminate(self):
+            self._p.terminate()
+
+    proc = _AsyncProc(raw_proc)
 
     record = AgentRecord(
         room_name=room_name,
         pid=proc.pid,
-        process=proc,
+        process=proc,  # type: ignore[arg-type]
     )
     active_agents[room_name] = record
 
-    # Relay stdout + stderr to WebSocket broadcaster
-    asyncio.create_task(
-        _relay_stream(proc.stdout, room_name, proc.pid, "stdout"),
-        name=f"relay_stdout_{room_name}",
-    )
-    asyncio.create_task(
-        _relay_stream(proc.stderr, room_name, proc.pid, "stderr"),
-        name=f"relay_stderr_{room_name}",
-    )
-
-    # Watcher auto-removes registry when process exits
-    record._watch_task = asyncio.create_task(
-        _watch_process(record),
-        name=f"watch_bot_{room_name}",
-    )
+    asyncio.create_task(_relay_pipe(proc.stdout, room_name, proc.pid, "stdout"),
+                        name=f"relay_stdout_{room_name}")
+    asyncio.create_task(_relay_pipe(proc.stderr, room_name, proc.pid, "stderr"),
+                        name=f"relay_stderr_{room_name}")
+    record._watch_task = asyncio.create_task(_watch_process(record),
+                                             name=f"watch_bot_{room_name}")
 
     log.info("event=bot_spawned room=%s pid=%d", room_name, proc.pid)
     return record
+
 
 
 async def _watch_process(record: AgentRecord) -> None:
@@ -302,6 +370,7 @@ class OnCallRequest(BaseModel):
     To:         Optional[str] = None   # Twilio capitalisation variant
     caller_id:  Optional[str] = "unknown"
     call_sid:   Optional[str] = None   # Twilio CallSid / Telnyx call_control_id
+    config:     Optional[dict] = None  # per-session config override (merged over global)
 
     def resolved_room_name(self) -> str:
         """Derive a safe room name from whichever field is present."""
@@ -413,8 +482,17 @@ async def on_call(request: Request) -> JSONResponse:
         raise HTTPException(status_code=500, detail="Token generation failed.") from exc
 
     # -- Spawn bot subprocess -----------------------------------------------
+    # Merge per-session config override (if any) over the global config
+    session_config = global_config
+    if body.config:
+        try:
+            session_config = global_config.merge_patch(body.config)
+            log.info("event=session_config_override room=%s keys=%s", room_name, list(body.config.keys()))
+        except Exception as exc:
+            log.warning("event=config_override_failed room=%s error=%s", room_name, exc)
+
     try:
-        record = await _spawn_bot(room_name, token)
+        record = await _spawn_bot(room_name, token, session_config)
     except Exception as exc:
         log.error("event=spawn_failed room=%s error=%s", room_name, exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to spawn bot process.") from exc
@@ -463,6 +541,41 @@ async def join_token(room: str, identity: str = "human-tester") -> JSONResponse:
         "url":         LIVEKIT_URL,
         "room":        room,
         "identity":    identity,
+    })
+
+
+@app.get("/config")
+async def get_config() -> JSONResponse:
+    """Return the current global configuration."""
+    return JSONResponse(global_config.model_dump(exclude_none=True))
+
+
+@app.put("/config")
+async def update_config(request: Request) -> JSONResponse:
+    """Update global config with a partial JSON patch.
+
+    Accepts nested partial updates, e.g.:
+        {"groq": {"temperature": 0.7}}
+    Only changes the specified fields; everything else is preserved.
+    Persists to disk immediately.
+    """
+    global global_config
+    try:
+        patch = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}") from exc
+
+    try:
+        global_config = global_config.merge_patch(patch)
+        global_config.save(CONFIG_PATH)
+    except Exception as exc:
+        log.error("event=config_update_failed error=%s", exc)
+        raise HTTPException(status_code=422, detail=f"Config validation error: {exc}") from exc
+
+    log.info("event=config_updated keys=%s", list(patch.keys()))
+    return JSONResponse({
+        "status": "updated",
+        "config": global_config.model_dump(exclude_none=True),
     })
 
 
